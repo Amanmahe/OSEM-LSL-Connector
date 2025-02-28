@@ -6,8 +6,11 @@ import { Wifi } from 'lucide-react';
 
 const App = () => {
   const [deviceConnected, setDeviceConnected] = useState(false);
+  const [channels, setChannels] = useState(8);
+  const [connect, setConnect] = useState(false);
 
-  const ws = useRef<WebSocket | null>(null);
+  const ws1 = useRef<WebSocket | null>(null);
+  const ws2 = useRef<WebSocket | null>(null);
 
   const isProcessing = useRef(false);
 
@@ -17,27 +20,18 @@ const App = () => {
       target.classList.add("scale-95", "shadow-active");
       setTimeout(() => {
         target.classList.remove("scale-95", "shadow-active");
-      }, 100); // Adjust delay as needed
+      }, 100);
     }
   };
 
-  ////
+  const initializeWebSocket = (url: string, deviceRef: React.MutableRefObject<WebSocket | null>, onOpenCallback: () => void) => {
+    return new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(url);
+      deviceRef.current = socket;
 
-  //////
-  const channels = 8;
-  const [connect, setConnect] = useState(false);
-
-
-
-  useEffect(() => {
-    if (!connect) return;
-
-    const webSocket = new WebSocket("ws://oric.local:81");
-    ws.current = webSocket;
-
-    webSocket.onopen = () => {
-      console.log("WebSocket connection established.");
-      const channelConfig = [];
+      socket.onopen = () => {
+        console.log(`WebSocket connection established: ${url}`);
+          const channelConfig = [];
       channelConfig.push(
         { command: "reset", parameters: [] },
         { command: "sdatac", parameters: [] },
@@ -57,80 +51,141 @@ const App = () => {
         { command: "rdatac", parameters: [] }
       );
 
-      channelConfig.forEach((cmd) => webSocket.send(JSON.stringify(cmd)));
+      channelConfig.forEach((cmd) =>socket.send(JSON.stringify(cmd)));
       console.log(channelConfig);
-    };
+        onOpenCallback();
+        resolve(socket);
+      };
 
-    webSocket.onmessage = (event) => {
-      isProcessing.current = true;
-      setDeviceConnected(true);
-      const data = event.data;
+      socket.onerror = (error) => {
+        console.error(`WebSocket error on ${url}:`, error);
+        reject(error);
+      };
+    });
+  };
 
-      if (typeof data === "string") {
-        console.warn("Unexpected string data received:", data);
-        return;
-      }
+  useEffect(() => {
+    if (!connect) return;
 
-      if (data instanceof Blob) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const buffer = Buffer.from(reader.result as ArrayBuffer);
-          const blockSize = 32;
-          for (let blockLocation = 0; blockLocation < buffer.length; blockLocation += blockSize) {
-            const block = buffer.slice(blockLocation, blockLocation + blockSize);
-            const channelData: number[] = [];
-            for (let channel = 0; channel < 8; channel++) {
-              const offset = 8 + channel * 3;
-              const sample = block.readIntBE(offset, 3);
-              channelData.push(sample);
-            }
-            // Start sending data continuously at intervals
-         
-            core.invoke('start_streaming', { channelData: channelData })
-              .then((response) => {
-                console.log('Data sent to backend successfully:', response);
-              })
-              .catch((error) => {
-                console.error('Error sending data to backend:', error);
-              });            
-            // console.log(channelData);
+    let device1Connected = false;
+    let device2Connected = false;
 
-          }
-        };
-        reader.readAsArrayBuffer(data);
-      } else {
-        console.error("Unexpected data format received:", data);
-      }
-    };
-
-    webSocket.onclose = () => {
-      setConnect(false);
-      console.log("WebSocket connection closed.");
-    };
+    initializeWebSocket("ws://192.168.0.22:81", ws1, () => { device1Connected = true; })
+      .then(() => initializeWebSocket("ws://192.168.0.100:81", ws2, () => { device2Connected = true; }))
+      .catch(() => console.warn("Second device not available, using single device."))
+      .finally(() => {
+        setDeviceConnected(true);
+        setChannels(device2Connected ? 16 : 8);
+      });
 
     return () => {
-      webSocket.close();
+      if (ws1.current) ws1.current.close();
+      if (ws2.current) ws2.current.close();
+      setDeviceConnected(false);
     };
-  }, [connect, channels,]);
+  }, [connect]);
 
+  const handleWebSocketMessage = (event: MessageEvent, deviceIndex: number) => {
+    isProcessing.current = true;
+    const data = event.data;
+
+    if (typeof data === "string") {
+      console.warn("Unexpected string data received:", data);
+      return;
+    }
+
+    if (data instanceof Blob) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const buffer = Buffer.from(reader.result as ArrayBuffer);
+        const blockSize = 32;
+        for (let blockLocation = 0; blockLocation < buffer.length; blockLocation += blockSize) {
+          const block = buffer.slice(blockLocation, blockLocation + blockSize);
+          const channelData: number[] = [];
+          for (let channel = 0; channel < 8; channel++) {
+            const offset = 8 + channel * 3;
+            const sample = block.readIntBE(offset, 3);
+            channelData.push(sample);
+          }
+          // Start sending data continuously at intervals
+       
+          core.invoke('start_streaming_1', { channelData: channelData })
+            .then((response) => {
+              console.log('Data sent to backend successfully:', response);
+            })
+            .catch((error) => {
+              console.error('Error sending data to backend:', error);
+            });            
+          // console.log(channelData);
+
+        }
+      };
+      reader.readAsArrayBuffer(data);
+    } else {
+      console.error("Unexpected data format received:", data);
+    }
+  };
+
+  const handleWebSocketMessage2= (event: MessageEvent, deviceIndex: number) => {
+    isProcessing.current = true;
+    const data = event.data;
+
+    if (typeof data === "string") {
+      console.warn("Unexpected string data received:", data);
+      return;
+    }
+
+    if (data instanceof Blob) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const buffer = Buffer.from(reader.result as ArrayBuffer);
+        const blockSize = 32;
+        for (let blockLocation = 0; blockLocation < buffer.length; blockLocation += blockSize) {
+          const block = buffer.slice(blockLocation, blockLocation + blockSize);
+          const channelData: number[] = [];
+          for (let channel = 0; channel < 8; channel++) {
+            const offset = 8 + channel * 3;
+            const sample = block.readIntBE(offset, 3);
+            channelData.push(sample);
+          }
+          // Start sending data continuously at intervals
+       
+          core.invoke('start_streaming_2', { channelData: channelData })
+            .then((response) => {
+              console.log('Data sent to backend successfully:', response);
+            })
+            .catch((error) => {
+              console.error('Error sending data to backend:', error);
+            });            
+          // console.log(channelData);
+
+        }
+      };
+      reader.readAsArrayBuffer(data);
+    } else {
+      console.error("Unexpected data format received:", data);
+    }
+  };
+
+  useEffect(() => {
+    if (ws1.current) ws1.current.onmessage = (event) => handleWebSocketMessage(event, 0);
+    if (ws2.current) ws2.current.onmessage = (event) => handleWebSocketMessage2(event, 1);
+  }, [channels]);
 
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-200">
       <div
-        onClick={() => {  setConnect(true); }
-        }
+        onClick={() => setConnect(true)}
         onMouseDown={handleMouseDown}
-
         className={`
-          flex items-center justify-center w-28 h-28 rounded-full cursor-pointer bg-gray-200 shadow-[8px_8px_16px_#bebebe,-8px_-8px_16px_#ffffff] 
+          flex items-center justify-center w-28 h-28 rounded-full cursor-pointer bg-gray-200 shadow-[8px_8px_16px_#bebebe,-8px_-8px_16px_#ffffff]
           transition-all duration-600 relative ${isProcessing.current ? 'animate-[rotateShadow_1.5s_linear_infinite]' : ''}
         `}
         style={{ pointerEvents: isProcessing.current ? 'none' : 'auto' }}
       >
         <Wifi
           size={40}
-          className={`transition-colors duration-300 ${deviceConnected ? 'text-green-500' : 'text-gray-500'
-            }`}
+          className={`transition-colors duration-300 ${deviceConnected ? 'text-green-500' : 'text-gray-500'}`}
         />
       </div>
     </div>
